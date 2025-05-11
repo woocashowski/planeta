@@ -1,64 +1,64 @@
-from fastapi import FastAPI, File, UploadFile
-from fastapi.responses import JSONResponse, FileResponse
+from fastapi import FastAPI, UploadFile, File, Request
+from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
-import uuid
 import os
+import uuid
 
 app = FastAPI()
 
-# Allow frontend to communicate with backend
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["*"],  # lepiej ograniczyć do twojej domeny
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-UPLOAD_DIR = "uploads"
-CHART_DIR = "charts"
-os.makedirs(UPLOAD_DIR, exist_ok=True)
-os.makedirs(CHART_DIR, exist_ok=True)
+UPLOAD_FOLDER = "uploads"
+CHART_FOLDER = "charts"
+os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+os.makedirs(CHART_FOLDER, exist_ok=True)
 
 @app.post("/analyze")
-async def analyze(file: UploadFile = File(...)):
-    # Save uploaded file
-    file_path = os.path.join(UPLOAD_DIR, file.filename)
-    with open(file_path, "wb") as f:
-        f.write(await file.read())
+async def analyze(request: Request, file: UploadFile = File(...)):
+    contents = await file.read()
+    filename = os.path.join(UPLOAD_FOLDER, file.filename)
 
-    # Read data with pandas
+    with open(filename, "wb") as f:
+        f.write(contents)
+
+    if file.filename.endswith(".csv"):
+        df = pd.read_csv(filename)
+    else:
+        df = pd.read_excel(filename)
+
+    # Summary statistics jako dict
+    summary = df.describe(include='all').fillna("").to_dict()
+
+    # Wykres korelacji
+    chart_id = f"{uuid.uuid4()}.png"
+    chart_path = os.path.join(CHART_FOLDER, chart_id)
+
     try:
-        if file.filename.endswith(".csv"):
-            df = pd.read_csv(file_path)
-        else:
-            df = pd.read_excel(file_path)
-    except Exception as e:
-        return JSONResponse(status_code=400, content={"error": f"Failed to read file: {e}"})
+        sns.set(style="darkgrid")
+        plt.figure(figsize=(10, 6))
+        sns.heatmap(df.corr(numeric_only=True), annot=True, cmap="coolwarm")
+        plt.tight_layout()
+        plt.savefig(chart_path)
+        plt.close()
+    except:
+        chart_path = None
 
-    # Get describe summary
-    summary = df.describe(include='all').to_string()
-
-    # Generate heatmap
-    plt.figure(figsize=(10, 6))
-    sns.heatmap(df.select_dtypes(include='number').corr(), annot=True, cmap="coolwarm")
-    chart_id = str(uuid.uuid4()) + ".png"
-    chart_path = os.path.join(CHART_DIR, chart_id)
-    plt.tight_layout()
-    plt.savefig(chart_path)
-    plt.close()
+    chart_url = str(request.url_for("get_chart", filename=chart_id)) if chart_path else ""
 
     return {
         "summary": summary,
-        "chart_url": f"/chart/{chart_id}"
+        "chart_url": chart_url
     }
 
 @app.get("/chart/{filename}")
 def get_chart(filename: str):
-    chart_path = os.path.join(CHART_DIR, filename)
-    if os.path.exists(chart_path):
-        return FileResponse(chart_path, media_type="image/png")
-    return JSONResponse(status_code=404, content={"error": "Chart not found"})
+    return FileResponse(os.path.join(CHART_FOLDER, filename))
